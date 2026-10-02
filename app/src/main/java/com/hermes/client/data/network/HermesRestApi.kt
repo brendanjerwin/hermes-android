@@ -14,7 +14,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
-class HermesApiException(val code: Int, message: String) : Exception(message)
+open class HermesApiException(val code: Int, message: String) : Exception(message)
 
 class HermesRestApi(
     private val okHttp: OkHttpClient,
@@ -26,15 +26,36 @@ class HermesRestApi(
 
     private fun builder(path: String): Request.Builder {
         val cfg = config()
+        val (mode, credential) = resolveCredential(cfg)
         // Keep the diagnostic log's redaction current with whatever token is active, so a
         // shared log can never contain the session token in plain text.
-        com.hermes.client.data.diagnostics.DebugLog.setTokenToRedact(cfg.token)
+        com.hermes.client.data.diagnostics.DebugLog.setTokenToRedact(credential)
         // Trim trailing slashes so a user-entered "http://host:9119/" doesn't produce
         // "//api/..." — the gateway routes a double slash to its web UI (HTML), not the API.
         val b = Request.Builder().url("${cfg.baseUrl.trimEnd('/')}$path")
-        if (cfg.token.isNotBlank()) b.header("X-Hermes-Session-Token", cfg.token)
+        when (mode) {
+            AuthMode.OIDC -> b.header("Authorization", "Bearer $credential")
+            AuthMode.SESSION_TOKEN -> b.header("X-Hermes-Session-Token", credential)
+            AuthMode.NONE -> {}
+        }
         return b
     }
+
+    /**
+     * Resolve the credential for an authenticated REST call. OIDC mode (RFC 8252 native
+     * flow) attaches `Authorization: Bearer <access_token>` and never the session-token
+     * header (a cookieless native session would get a 401 no_cookie from a token header).
+     * Priority: OIDC > session-token > none (password mode authenticates via the cookie
+     * jar, not a header).
+     */
+    private fun resolveCredential(cfg: GatewayConfig): Pair<AuthMode, String> {
+        val tokens = cfg.oauthTokens
+        if (tokens != null && tokens.accessToken.isNotBlank()) return AuthMode.OIDC to tokens.accessToken
+        if (cfg.token.isNotBlank()) return AuthMode.SESSION_TOKEN to cfg.token
+        return AuthMode.NONE to ""
+    }
+
+    private enum class AuthMode { OIDC, SESSION_TOKEN, NONE }
 
     private suspend inline fun <reified T> get(path: String): T = withContext(Dispatchers.IO) {
         com.hermes.client.data.diagnostics.DebugLog.log("rest", "GET $path")
@@ -54,19 +75,22 @@ class HermesRestApi(
     /**
      * T10b: test connectivity using explicitly supplied credentials WITHOUT reading from
      * configProvider. Used by SetupViewModel.test() so unverified creds are never persisted.
+     * In OIDC mode [token] carries an access token and rides as the bearer (never the
+     * session-token header).
      */
     suspend fun statusFor(baseUrl: String, token: String): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             val rb = Request.Builder().url("${baseUrl.trimEnd('/')}/api/status").get()
-            if (token.isNotBlank()) rb.header("X-Hermes-Session-Token", token)
+            if (token.isNotBlank()) rb.header("Authorization", "Bearer $token")
             okHttp.newCall(rb.build()).execute().use { it.isSuccessful }
         }.getOrDefault(false)
     }
 
-    /** Delegates to [statusFor] using the current stored config. */
+    /** Delegates to [statusFor] using the current stored config (bearer in OIDC mode). */
     suspend fun status(): Boolean {
         val cfg = configProvider() ?: return false
-        return statusFor(cfg.baseUrl, cfg.token)
+        val (_, credential) = resolveCredential(cfg)
+        return statusFor(cfg.baseUrl, credential)
     }
 
     /** Public /api/status — gateway version + running state. */

@@ -124,16 +124,54 @@ class GatedAuth(
 }
 
 /**
- * On a 401 from the gated dashboard, log in once and retry the request — the cookie jar re-applies
- * the freshly minted session cookies. A marker header prevents an infinite re-auth loop if the
- * retry still fails (e.g. wrong password).
+ * On a 401 from the gateway, re-authenticate and retry the request ONCE. Two mechanisms:
+ *
+ *  - OIDC mode (RFC 8252 native flow): single-flight refresh via [NativeTokenClient], then
+ *    retry with the freshly rotated bearer. A terminal refresh (401 from
+ *    /auth/native/refresh, i.e. a dead RT) clears the tokens and the authenticator gives
+ *    up so the caller surfaces a fresh login (desktop `shouldRotateNativeTokenAfterRejection`:
+ *    only a structured 401 qualifies; a 403 is a policy refusal for an identity the gate
+ *    DID recognize, and a rotated token cannot change it).
+ *  - Password mode: log in once (cookies land in the jar) and retry.
+ *
+ * A marker header prevents an infinite re-auth loop if the retry still fails (e.g. wrong
+ * password / dead RT).
  */
-class GatedAuthenticator(private val auth: GatedAuth) : Authenticator {
+class GatedAuthenticator(
+    private val auth: GatedAuth,
+    private val tokenClient: com.hermes.client.data.auth.NativeTokenClient? = null,
+) : Authenticator {
     override fun authenticate(route: Route?, response: Response): Request? {
         if (response.request.header(RETRY_MARKER) != null) return null
-        if (!auth.login()) return null
-        return response.request.newBuilder().header(RETRY_MARKER, "1").build()
+        // Rebuild with the marker FIRST so any branch that returns non-null is already fenced
+        // against an infinite re-auth loop.
+        val original = response.request.newBuilder().header(RETRY_MARKER, "1").build()
+        // No native-token client wired → pure password mode (loopback/cookie jar).
+        if (tokenClient == null) {
+            return if (auth.login()) original else null
+        }
+        val outcome = kotlinx.coroutines.runBlocking {
+            runCatching { tokenClient.refreshAfter401(rejectedAccessTokenOf(response)) }.getOrNull()
+        }
+        return when (outcome) {
+            is com.hermes.client.data.auth.NativeTokenClient.RefreshOutcome.Refreshed ->
+                original.newBuilder().header("Authorization", "Bearer ${outcome.accessToken}").build()
+            is com.hermes.client.data.auth.NativeTokenClient.RefreshOutcome.NotOidcMode -> {
+                // Stored config is password/token mode: log in once (cookies land in the jar,
+                // re-applied on the retried request).
+                if (auth.login()) original else null
+            }
+            // Terminal (dead RT) or error → give up; the caller surfaces a fresh login.
+            else -> null
+        }
     }
+
+    /** The access token the rejected request carried (null/plain when none). */
+    private fun rejectedAccessTokenOf(response: Response): String? =
+        response.request.header("Authorization")
+            ?.takeIf { it.startsWith("Bearer ") }
+            ?.removePrefix("Bearer ")
+            ?.takeIf { it.isNotBlank() }
 
     private companion object {
         const val RETRY_MARKER = "X-Hermes-Reauth"

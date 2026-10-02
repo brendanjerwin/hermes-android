@@ -8,9 +8,31 @@ data class GatewayConfig(
     // plus a per-socket WS ticket, instead of the loopback session token.
     val username: String = "",
     val password: String = "",
+    /**
+     * RFC 8252 native OAuth (gateway as authorization server): tokens live in [oauthTokens].
+     * Mutually exclusive with the password and token modes — when set, REST authenticates with
+     * `Authorization: Bearer <access_token>` and no session-token header or password login is
+     * sent. Mode priority when several carry values: OIDC > password > token.
+     */
+    val oauthTokens: NativeTokenSet? = null,
 ) {
     /** True when this targets a gated dashboard (basic-auth); false for a loopback/token setup. */
     val isGated: Boolean get() = username.isNotBlank()
+
+    /** True when the stored config holds a native OAuth token set (bearer-authenticated). */
+    val isOidc: Boolean get() = oauthTokens != null
+
+    /**
+     * The credential to present on an unauthenticated REST/WS setup probe, in the same
+     * priority the runtime auth layers resolve: bearer access token in OIDC mode, else the
+     * session token. (Password mode probes via a POST login, not a header.)
+     */
+    fun probeCredential(): String? =
+        when {
+            isOidc && oauthTokens?.accessToken?.isNotBlank() == true -> oauthTokens.accessToken
+            token.isNotBlank() -> token
+            else -> null
+        }
 
     /** Base WS endpoint with no auth query — the auth param (?token / ?ticket) is appended later. */
     val wsBase: String

@@ -5,11 +5,17 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
 import com.hermes.client.data.diagnostics.DebugLog
+import kotlinx.serialization.json.Json
 
 /**
  * Concrete secure storage backed by EncryptedSharedPreferences (security-crypto 1.0.0).
- * If migrating to a newer backend later, only this file changes — callers depend on
- * the CredentialStore interface.
+ * If migrating to a newer backend later, only this file changes — callers depend on the
+ * CredentialStore interface.
+ *
+ * The RFC 8252 OAuth token set is serialized as the camelCase [NativeTokenSet] JSON inside
+ * the same encrypted prefs — the desktop's safeStorage-boundary equivalent. The stored
+ * direction uses NativeAuthLogic.parseStoredTokenSet never parseTokenResponse (crossing the
+ * two broke the desktop on every restart, #73271).
  */
 class EncryptedCredentialStore(private val context: Context) : CredentialStore {
     // EncryptedSharedPreferences keeps its Tink keyset inside this same prefs file. If that keyset
@@ -62,6 +68,14 @@ class EncryptedCredentialStore(private val context: Context) : CredentialStore {
             token = prefs.getString("token", null) ?: "",
             username = prefs.getString("username", null) ?: "",
             password = prefs.getString("password", null) ?: "",
+            oauthTokens = prefs.getString("oauth_tokens", null)?.let { raw ->
+                runCatching {
+                    // Stored blobs are normalized camelCase sets, never raw gateway responses.
+                    NativeAuthLogic.parseStoredTokenSet(raw, tokenJson)
+                }.onFailure {
+                    DebugLog.log("auth", "stored oauth tokens unreadable, dropping: ${it.message}")
+                }.getOrNull()
+            },
         )
     }
 
@@ -71,6 +85,10 @@ class EncryptedCredentialStore(private val context: Context) : CredentialStore {
             .putString("token", config.token)
             .putString("username", config.username)
             .putString("password", config.password)
+            .putString(
+                "oauth_tokens",
+                config.oauthTokens?.let { tokenJson.encodeToString(NativeTokenSet.serializer(), it) },
+            )
             .apply()
     }
 
@@ -84,5 +102,6 @@ class EncryptedCredentialStore(private val context: Context) : CredentialStore {
         // package-private). Deleting this entry forces a fresh master key if the keyset reset alone
         // didn't recover.
         const val MASTER_KEY_ALIAS = "_androidx_security_master_key_"
+        val tokenJson = Json { ignoreUnknownKeys = true }
     }
 }

@@ -74,7 +74,8 @@ class HermesRestApiTest {
         assertTrue(api(serverRule.server).status())
     }
 
-    // T10b: statusFor() uses supplied baseUrl+token directly, never touches configProvider
+    // T10b: statusFor() uses supplied baseUrl+token directly, never touches configProvider.
+    // The explicit credential rides as the Authorization bearer (OIDC/loopback probe uniform).
     @Test fun statusFor_uses_explicit_credentials_not_stored_config() = runTest {
         val server = serverRule.server
         server.enqueue(MockResponse.Builder().code(200).body("""{"ok":true}""").build())
@@ -86,7 +87,7 @@ class HermesRestApiTest {
         )
         assertTrue(result)
         val recorded = server.takeRequest()
-        assertEquals("explicit-token", recorded.headers["X-Hermes-Session-Token"])
+        assertEquals("Bearer explicit-token", recorded.headers["Authorization"])
     }
 
     @Test fun statusFor_returns_false_on_non_2xx() = runTest {

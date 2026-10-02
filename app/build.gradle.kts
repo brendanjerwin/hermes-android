@@ -109,6 +109,7 @@ dependencies {
     implementation(libs.markdown.m3)
     implementation(libs.zxing.embedded)
     implementation(libs.glance.appwidget)
+    implementation(libs.androidx.browser)
 
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.compose.ui.test.manifest)

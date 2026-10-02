@@ -1,14 +1,18 @@
 package com.hermes.client.ui.settings
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -17,6 +21,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -33,8 +38,8 @@ fun ConnectionSettingsScreen(
     Scaffold(
         topBar = {
             com.hermes.client.ui.components.HermesTopBar(
-                title = "Server & token",
-                navigationIcon = { IconButton(onClick = onBack) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") } },
+                title = "Server & sign-in",
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") } },
             )
         },
     ) { padding ->
@@ -43,9 +48,9 @@ fun ConnectionSettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "The Hermes dashboard this app connects to. For a password-protected (network) " +
-                    "dashboard, set the URL plus username + password. For a local/loopback setup, " +
-                    "use the URL and token. Save to reconnect.",
+                "The Hermes dashboard this app connects to. Sign in with OIDC (recommended) " +
+                    "opens your browser once; advanced fallbacks use a password (network " +
+                    "dashboard) or a session token (local/loopback). Save to reconnect.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -56,31 +61,70 @@ fun ConnectionSettingsScreen(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            OutlinedTextField(
-                value = state.username,
-                onValueChange = vm::onUsernameChange,
-                label = { Text("Username (for password-protected dashboards)") },
-                singleLine = true,
+            // ---------------- Recommended: OIDC sign in ----------------
+            Button(
+                onClick = { vm.signInWithOidc() },
+                enabled = !state.oidcInProgress && state.url.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = state.password,
-                onValueChange = vm::onPasswordChange,
-                label = { Text("Password") },
-                singleLine = true,
-                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = state.token,
-                onValueChange = vm::onTokenChange,
-                label = { Text("Token (loopback only — leave blank if using a password)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            ) {
+                if (state.oidcInProgress) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.padding(end = 8.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Text("Waiting for sign-in…")
+                } else {
+                    Text("Sign in with OIDC (recommended)")
+                }
+            }
+            state.oidcStatus?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = state.oidcError?.let { _ -> MaterialTheme.colorScheme.error }
+                        ?: MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            // ---------------- Advanced fallbacks ----------------
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                IconButton(onClick = { vm.toggleAdvanced() }) {
+                    Icon(
+                        if (state.showAdvanced) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = if (state.showAdvanced) "Hide advanced options" else "Show advanced options",
+                    )
+                }
+                Text("Advanced", style = MaterialTheme.typography.labelLarge)
+            }
+            if (state.showAdvanced) {
+                OutlinedTextField(
+                    value = state.username,
+                    onValueChange = vm::onUsernameChange,
+                    label = { Text("Username (for password-protected dashboards)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = state.password,
+                    onValueChange = vm::onPasswordChange,
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = state.token,
+                    onValueChange = vm::onTokenChange,
+                    label = { Text("Token (loopback only — leave blank if using a password)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { vm.test() }) { Text("Test") }
-                Button(onClick = { vm.save() }) { Text("Save & reconnect") }
+                OutlinedButton(onClick = { vm.save() }) { Text("Save & reconnect") }
             }
             state.testResult?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
         }

@@ -21,6 +21,7 @@ class SetupViewModelTest {
     private val store = mockk<CredentialStore>(relaxed = true)
     private val rest = mockk<HermesRestApi>(relaxed = true)
     private val gatedAuth = mockk<GatedAuth>(relaxed = true)
+    private val nativePkceLogin = mockk<com.hermes.client.data.auth.NativePkceLogin>(relaxed = true)
 
     @Before fun setUp() {
         Dispatchers.setMain(StandardTestDispatcher())
@@ -29,7 +30,7 @@ class SetupViewModelTest {
 
     @After fun tearDown() = Dispatchers.resetMain()
 
-    private fun vm() = SetupViewModel(store, rest, gatedAuth)
+    private fun vm() = SetupViewModel(store, rest, gatedAuth, nativePkceLogin)
 
     @Test fun applyPairing_populates_fields_from_valid_payload() {
         val vm = vm()

@@ -8,7 +8,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -16,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -58,30 +65,67 @@ fun SetupScreen(vm: SetupViewModel = hiltViewModel(), onSaved: () -> Unit) {
             label = { Text("Gateway URL (e.g. http://100.x.x.x:9119)") },
             modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedTextField(
-            value = state.username,
-            onValueChange = vm::onUsernameChange,
-            label = { Text("Username (for password-protected dashboards)") },
-            singleLine = true,
+        // ---------------- Recommended: OIDC sign in ----------------
+        Button(
+            onClick = { vm.signInWithOidc() },
+            enabled = !state.oidcInProgress && state.url.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (state.oidcInProgress) {
+                CircularProgressIndicator(
+                    modifier = Modifier.padding(end = 8.dp),
+                    strokeWidth = 2.dp,
+                )
+                Text("Waiting for sign-in…")
+            } else {
+                Text("Sign in with OIDC (recommended)")
+            }
+        }
+        state.oidcError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Text(
+            "Opens your browser once to sign in; tokens are stored encrypted on this device.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        OutlinedTextField(
-            value = state.password,
-            onValueChange = vm::onPasswordChange,
-            label = { Text("Password") },
-            singleLine = true,
-            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = state.token,
-            onValueChange = vm::onTokenChange,
-            label = { Text("Token (loopback only — blank if using a password)") },
-            modifier = Modifier.fillMaxWidth(),
-        )
+        // ---------------- Advanced fallbacks (token / password) ----------------
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            IconButton(onClick = { vm.toggleAdvanced() }) {
+                Icon(
+                    if (state.showAdvanced) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    contentDescription = if (state.showAdvanced) "Hide advanced options" else "Show advanced options",
+                )
+            }
+            Text("Advanced", style = MaterialTheme.typography.labelLarge)
+        }
+        if (state.showAdvanced) {
+            OutlinedTextField(
+                value = state.username,
+                onValueChange = vm::onUsernameChange,
+                label = { Text("Username (for password-protected dashboards)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.password,
+                onValueChange = vm::onPasswordChange,
+                label = { Text("Password") },
+                singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.token,
+                onValueChange = vm::onTokenChange,
+                label = { Text("Token (loopback only — blank if using a password)") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { vm.test() }) { Text("Test") }
-            Button(onClick = { vm.save() }) { Text("Save & continue") }
+            OutlinedButton(onClick = { vm.save() }) { Text("Save & continue") }
         }
         state.testResult?.let { Text(it) }
     }

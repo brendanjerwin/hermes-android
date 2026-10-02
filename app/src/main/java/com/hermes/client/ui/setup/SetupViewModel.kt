@@ -4,10 +4,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermes.client.data.auth.CredentialStore
 import com.hermes.client.data.auth.GatewayConfig
+import com.hermes.client.data.auth.NativeLoginException
+import com.hermes.client.data.auth.NativePkceLogin
+import com.hermes.client.data.auth.NativeTokenSet
 import com.hermes.client.data.network.GatedAuth
 import com.hermes.client.data.network.HermesRestApi
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,6 +27,11 @@ data class SetupUiState(
     val testResult: String? = null,
     val saved: Boolean = false,
     val scanError: String? = null,
+    /** OIDC browser flow in flight (button spinner + disabled Save). */
+    val oidcInProgress: Boolean = false,
+    val oidcError: String? = null,
+    /** Token/password fallback fields collapsed behind "Advanced". */
+    val showAdvanced: Boolean = false,
 )
 
 @HiltViewModel
@@ -30,18 +39,25 @@ class SetupViewModel @Inject constructor(
     private val store: CredentialStore,
     private val rest: HermesRestApi,
     private val gatedAuth: GatedAuth,
+    private val nativePkceLogin: NativePkceLogin,
 ) : ViewModel() {
     private val _state = MutableStateFlow(
         store.load()?.let {
-            SetupUiState(url = it.baseUrl, token = it.token, username = it.username, password = it.password)
+            SetupUiState(
+                url = it.baseUrl, token = it.token, username = it.username, password = it.password,
+                showAdvanced = it.isOidc.not() && (it.token.isNotBlank() || it.isGated),
+            )
         } ?: SetupUiState(),
     )
     val state: StateFlow<SetupUiState> = _state.asStateFlow()
+
+    private var oidcJob: Job? = null
 
     fun onUrlChange(v: String) { _state.value = _state.value.copy(url = v.trim()) }
     fun onTokenChange(v: String) { _state.value = _state.value.copy(token = v.trim()) }
     fun onUsernameChange(v: String) { _state.value = _state.value.copy(username = v.trim()) }
     fun onPasswordChange(v: String) { _state.value = _state.value.copy(password = v) }
+    fun toggleAdvanced() { _state.value = _state.value.copy(showAdvanced = !_state.value.showAdvanced) }
 
     // T10b: test() must NOT persist unverified credentials — probe with transient values.
     fun test() = viewModelScope.launch {
@@ -59,6 +75,57 @@ class SetupViewModel @Inject constructor(
         store.save(GatewayConfig(s.url, s.token, s.username.trim(), s.password))
         gatedAuth.cookieJar.clear()
         _state.value = _state.value.copy(saved = true)
+    }
+
+    /**
+     * Run the RFC 8252 native login end-to-end: launch the system browser at the gateway's
+     * `/auth/native/authorize`, await the loopback redirect, exchange the code, and save
+     * the resulting token set as an OIDC-mode config. Mutually exclusive with the token
+     * and password modes — the saved config clears those credentials.
+     */
+    fun signInWithOidc() {
+        if (_state.value.oidcInProgress) return
+        val url = _state.value.url
+        if (url.isBlank()) {
+            _state.value = _state.value.copy(oidcError = "Enter the gateway URL first")
+            return
+        }
+        oidcJob = viewModelScope.launch {
+            _state.value = _state.value.copy(oidcInProgress = true, oidcError = null)
+            try {
+                val tokens = nativePkceLogin.login(url)
+                store.save(
+                    GatewayConfig(
+                        baseUrl = url,
+                        oauthTokens = tokens,
+                        // Mutually exclusive modes: the OIDC credential wins.
+                        token = "", username = "", password = "",
+                    ),
+                )
+                gatedAuth.cookieJar.clear()
+                _state.value = _state.value.copy(oidcInProgress = false, saved = true)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _state.value = _state.value.copy(oidcInProgress = false)
+                throw e
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    oidcInProgress = false,
+                    oidcError = oidcErrorMessage(e),
+                )
+            }
+        }
+    }
+
+    /** Cancel an in-flight browser login (user backed out); the loopback listener is torn down. */
+    override fun onCleared() {
+        oidcJob?.cancel()
+        super.onCleared()
+    }
+
+    private fun oidcErrorMessage(e: Exception): String = when {
+        e is NativeLoginException && e.message?.contains("timed out", ignoreCase = true) == true ->
+            "Sign-in timed out — the browser may not have completed login. Try again."
+        else -> e.message ?: "Sign-in failed"
     }
 
     /** Apply a scanned pairing QR: prefill the fields and auto-run the existing probe. */

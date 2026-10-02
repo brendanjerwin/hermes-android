@@ -3,6 +3,8 @@ package com.hermes.client.di
 import android.content.Context
 import com.hermes.client.data.auth.CredentialStore
 import com.hermes.client.data.auth.EncryptedCredentialStore
+import com.hermes.client.data.auth.NativePkceLogin
+import com.hermes.client.data.auth.NativeTokenClient
 import com.hermes.client.data.network.GatedAuth
 import com.hermes.client.data.network.GatedAuthenticator
 import com.hermes.client.data.network.HermesGatewayClient
@@ -45,14 +47,18 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(gatedAuth: GatedAuth): OkHttpClient = OkHttpClient.Builder()
+    fun provideOkHttpClient(
+        gatedAuth: GatedAuth,
+        tokenClient: NativeTokenClient,
+    ): OkHttpClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         // Gated-dashboard auth: the cookie jar carries the session cookies on every REST call,
         // and the authenticator re-logs-in and retries on a 401. In loopback/token mode the jar
-        // stays empty and the authenticator is a no-op (no username configured).
+        // stays empty and the authenticator is a no-op (no username configured). In OIDC mode
+        // the authenticator single-flight refreshes the bearer and retries once.
         .cookieJar(gatedAuth.cookieJar)
-        .authenticator(GatedAuthenticator(gatedAuth))
+        .authenticator(GatedAuthenticator(gatedAuth, tokenClient))
         .build()
 
     @Provides
@@ -72,6 +78,7 @@ object AppModule {
         scope: CoroutineScope,
         store: CredentialStore,
         gatedAuth: GatedAuth,
+        nativeTokenClient: NativeTokenClient,
     ): HermesGatewayClient = HermesGatewayClient(
         okHttp = okHttp,
         json = json,
@@ -81,15 +88,41 @@ object AppModule {
         // session is recovered (401 → login → retry) before the socket opens.
         wsUrlProvider = {
             val cfg = store.load() ?: error("no gateway configured")
-            if (cfg.isGated) {
-                val ticket = withContext(Dispatchers.IO) { gatedAuth.wsTicket(okHttp) }
-                    ?: error("ws ticket unavailable")
-                "${cfg.wsBase}?ticket=$ticket"
-            } else {
-                cfg.wsUrl
+            when {
+                cfg.isOidc -> {
+                    // OIDC mode: fetch the ws-ticket with the bearer — /api/auth/ws-ticket is
+                    // auth-required and the cookieless native session has no cookies to send.
+                    val ticket = withContext(Dispatchers.IO) { nativeTokenClient.ticketWithBearer(okHttp) }
+                        ?: error("ws ticket unavailable")
+                    "${cfg.wsBase}?ticket=$ticket"
+                }
+                cfg.isGated -> {
+                    val ticket = withContext(Dispatchers.IO) { gatedAuth.wsTicket(okHttp) }
+                        ?: error("ws ticket unavailable")
+                    "${cfg.wsBase}?ticket=$ticket"
+                }
+                else -> cfg.wsUrl
             }
         },
     )
+
+    @Provides
+    @Singleton
+    fun provideNativeTokenClient(
+        json: Json,
+        store: CredentialStore,
+    ): NativeTokenClient = NativeTokenClient(
+        json = json,
+        store = store,
+        refreshTokenSet = NativeTokenClient.defaultRefreshCall(json),
+    )
+
+    @Provides
+    @Singleton
+    fun provideNativePkceLogin(
+        @ApplicationContext context: Context,
+        json: Json,
+    ): NativePkceLogin = NativePkceLogin(context, json)
 
     @Provides
     @Singleton
